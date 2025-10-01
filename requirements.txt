@@ -2,3 +2,7 @@ streamlit
 pydicom
 opencv-python
 pandas
+torch
+torchvision
+pillow
+pytorch-grad-cam
