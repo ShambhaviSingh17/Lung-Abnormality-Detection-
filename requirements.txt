@@ -2,6 +2,6 @@ streamlit
 pydicom
 opencv-python-headless
 pandas
-torch==2.0.1
+torch==2.7.0
 torchvision==0.15.2
 pillow
