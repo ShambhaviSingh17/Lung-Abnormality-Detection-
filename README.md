@@ -21,7 +21,3 @@ To install them, run the following command in your terminal:
 
 ```bash
 pip install -r requirements.txt
-git clone https://github.com/your-username/CliniScan.git
-cd CliniScan
-pip install -r requirements.txt
-streamlit run app.py
