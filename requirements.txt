@@ -3,5 +3,5 @@ pydicom
 opencv-python-headless
 pandas
 torch==2.7.0
-torchvision==0.18.0   # optional, if you use torchvision
-torchaudio==2.7.0     # optional, if you use audio models
+torchvision==0.23.0
+torchaudio==2.7.0
