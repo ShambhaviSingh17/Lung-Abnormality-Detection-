@@ -18,6 +18,28 @@ You can install all necessary modules using the `requirements.txt` file.
 - pandas  
 
 To install them, run the following command in your terminal:
+```
+pip install -r requirements.txt 
+```
+## How to run the script
 
-```bash
+1-Clone the repository to your local machine:
+```
+git clone https://github.com/your-username/CliniScan.git
+cd CliniScan
+```
+
+2-Install the prerequisites:
+```
 pip install -r requirements.txt
+```
+
+3-Run the Streamlit web application:
+```
+streamlit run app.py
+```
+
+## Demo
+
+Try it here: [CliniScan Live Demo](https://kvekvdmryl6fg9wgsb42fg.streamlit.app/)
+
