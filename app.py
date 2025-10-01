@@ -10,8 +10,8 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 
-#import torch
-#import torch.nn as nn
+import torch
+import torch.nn as nn
 from torchvision import transforms, models
 
 import streamlit as st
