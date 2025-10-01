@@ -5,7 +5,7 @@ The script uses a **deep learning model trained on the VinDr-CXR dataset** to id
 
 ---
 
-## 🚀 Prerequisites
+##  Prerequisites
 
 This project requires **Python** and several key libraries to function correctly.  
 You can install all necessary modules using the `requirements.txt` file.
