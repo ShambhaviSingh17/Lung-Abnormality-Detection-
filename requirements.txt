@@ -14,8 +14,8 @@ opencv-python
 pillow
 pydicom
 
-# Grad-CAM
-pytorch-grad-cam
+# Grad-CAM (install from GitHub for Python 3.13 support)
+git+https://github.com/jacobgil/pytorch-grad-cam.git
 
 # Deep learning models (YOLOv8, etc.)
 ultralytics
