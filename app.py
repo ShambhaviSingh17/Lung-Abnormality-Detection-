@@ -194,9 +194,15 @@ else:
                     visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
 
                     st.subheader("Grad-CAM")
-                    st.image([rgb_img, visualization],
-                             caption=["Original", "Grad-CAM visualization"],
-                             use_column_width=True)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.image(rgb_img, caption="Original", width=300)
+                    
+                    with col2:
+                        st.image(visualization, caption="Grad-CAM", width=300)
+
                 except Exception as e:
                     st.error(f"Grad-CAM failed: {e}")
 
