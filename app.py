@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # app.py — CliniScan: Chest X-Ray Classification + Grad-CAM
 
+# app.py
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -12,8 +13,9 @@ import cv2
 import pandas as pd
 import os
 import tempfile
+import plotly.express as px
 
-# Optional Grad-CAM imports
+# Optional imports that may fail if not installed
 try:
     from pytorch_grad_cam import GradCAM
     from pytorch_grad_cam.utils.image import show_cam_on_image
@@ -24,33 +26,79 @@ except Exception as e:
     gradcam_import_error = e
 
 # -----------------------
-# Utilities: DICOM -> PIL
+# DICOM -> PIL utility
 # -----------------------
 import pydicom
 from io import BytesIO
 
 def dicom_bytes_to_pil(dcm_bytes):
     """Convert DICOM bytes to a PIL.Image (RGB)."""
-    try:
-        ds = pydicom.dcmread(BytesIO(dcm_bytes))
-        arr = ds.pixel_array
-        # Normalize to 0-255
-        arr_norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
-        # If single channel, convert to RGB
-        if arr_norm.ndim == 2:
-            img = Image.fromarray(arr_norm).convert("RGB")
-        else:
-            img = Image.fromarray(arr_norm).convert("RGB")
-        return img
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse DICOM: {e}")
+    ds = pydicom.dcmread(BytesIO(dcm_bytes))
+    arr = ds.pixel_array
+    arr_norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
+    if arr_norm.ndim == 2:
+        img = Image.fromarray(arr_norm).convert("RGB")
+    else:
+        img = Image.fromarray(arr_norm).convert("RGB")
+    return img
 
 # -----------------------
-# ResNet Classifier
+# Dataset class (kept for compatibility)
+# -----------------------
+from torch.utils.data import Dataset
+class VinDrCXRDataset(Dataset):
+    def __init__(self, df, img_dir, transform=None, task='classification'):
+        self.df = df
+        self.img_dir = img_dir
+        self.transform = transform
+        self.task = task
+
+        self.labels = sorted(df['label'].unique())
+        self.label_to_id = {label: i for i, label in enumerate(self.labels)}
+
+        self.grouped_images = self.df.groupby('image_id')
+        self.image_ids = list(self.grouped_images.groups.keys())
+
+    def __len__(self):
+        return len(self.image_ids)
+
+    def __getitem__(self, idx):
+        img_id = self.image_ids[idx]
+        img_path = os.path.join(self.img_dir, f"{img_id}.png")
+        image = Image.open(img_path).convert("RGB")
+        annotations = self.grouped_images.get_group(img_id)
+
+        if self.task == 'classification':
+            label_vector = torch.zeros(len(self.labels), dtype=torch.float)
+            for _, row in annotations.iterrows():
+                label_vector[self.label_to_id[row['label']]] = 1.0
+
+            if self.transform:
+                image = self.transform(image)
+
+            return image, label_vector
+
+        elif self.task == 'detection':
+            boxes, labels = [], []
+            for _, row in annotations.iterrows():
+                boxes.append([row['x_min'], row['y_min'], row['x_max'], row['y_max']])
+                labels.append(self.label_to_id[row['label']])
+
+            target = {
+                'boxes': torch.tensor(boxes, dtype=torch.float32),
+                'labels': torch.tensor(labels, dtype=torch.int64)
+            }
+
+            if self.transform:
+                image = self.transform(image)
+
+            return image, target
+
+# -----------------------
+# ResNetClassifier
 # -----------------------
 from torchvision.models import resnet18
 try:
-    # newer torchvision uses ResNet18_Weights
     from torchvision.models import ResNet18_Weights
     RESNET_WEIGHTS = ResNet18_Weights.DEFAULT
 except Exception:
@@ -59,12 +107,9 @@ except Exception:
 class ResNetClassifier(nn.Module):
     def __init__(self, num_classes=2):
         super(ResNetClassifier, self).__init__()
-        try:
-            if RESNET_WEIGHTS is not None:
-                self.model = resnet18(weights=RESNET_WEIGHTS)
-            else:
-                self.model = resnet18(pretrained=True)
-        except Exception:
+        if RESNET_WEIGHTS is not None:
+            self.model = resnet18(weights=RESNET_WEIGHTS)
+        else:
             self.model = resnet18(pretrained=True)
         num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Linear(num_ftrs, num_classes)
@@ -77,7 +122,6 @@ class ResNetClassifier(nn.Module):
 # -----------------------
 @st.cache_resource
 def load_model_from_path(model_path=None, num_classes=2):
-    """Load trained model if provided, else fallback ResNet18."""
     model = ResNetClassifier(num_classes=num_classes)
     if model_path:
         try:
@@ -91,8 +135,6 @@ def load_model_from_path(model_path=None, num_classes=2):
             return model
         except Exception as e:
             st.warning(f"Could not load model.pth: {e}")
-            st.info("Falling back to pretrained ResNet18.")
-    # fallback
     try:
         if RESNET_WEIGHTS is not None:
             base = resnet18(weights=RESNET_WEIGHTS)
@@ -117,19 +159,42 @@ transform = T.Compose([
 ])
 
 # -----------------------
+# Custom CSS
+# -----------------------
+st.markdown(
+    """
+    <style>
+    .big-title {
+        font-size:36px !important;
+        font-weight:bold;
+        color:#00BFFF;
+        text-align:center;
+    }
+    .footer {
+        font-size:14px;
+        text-align:center;
+        color:gray;
+        margin-top:50px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# -----------------------
 # Streamlit UI
 # -----------------------
 st.set_page_config(page_title="CliniScan — Chest X-Ray (Grad-CAM)", layout="wide")
-st.title("🩻 CliniScan — Chest X-Ray Classification + Grad-CAM")
+st.markdown('<p class="big-title">🩻 CliniScan — Chest X-Ray Classification + Grad-CAM</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Options")
-    num_classes = st.number_input("Number of classes (final layer)", value=2, min_value=2, max_value=20)
-    upload_model = st.file_uploader("Upload model.pth (optional)", type=["pt", "pth"])
-    show_gradcam = st.checkbox("Enable Grad-CAM visualization", value=True)
-    show_probs = st.checkbox("Show class probabilities", value=True)
+    st.image("https://streamlit.io/images/brand/streamlit-logo-primary-colormark-lighttext.png", width=120)
+    st.markdown("### Upload Settings")
+    num_classes = st.number_input("Number of classes", value=2, min_value=2, max_value=20)
+    upload_model = st.file_uploader("Upload model (.pth)", type=["pt", "pth"])
+    show_gradcam = st.checkbox("Enable Grad-CAM", value=True)
+    show_probs = st.checkbox("Show probabilities", value=True)
 
-# Handle uploaded model
 model_path = None
 if upload_model is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pth")
@@ -139,7 +204,6 @@ if upload_model is not None:
 
 model = load_model_from_path(model_path=model_path, num_classes=int(num_classes))
 
-# Image uploader
 uploaded = st.file_uploader("Upload an X-ray image or DICOM (.dcm)", type=["png","jpg","jpeg","dcm"])
 if uploaded is None:
     st.info("Upload a chest X-ray image (jpg/png) or a DICOM (.dcm) file to run prediction.")
@@ -151,9 +215,7 @@ else:
         else:
             img = Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
 
-        st.image(img, caption="Uploaded image", width=400)
-
-        # Preprocess and predict
+        # Preprocess + predict
         input_tensor = transform(img).unsqueeze(0)
         with torch.no_grad():
             outputs = model(input_tensor)
@@ -167,46 +229,48 @@ else:
         if show_probs:
             st.subheader("Prediction")
             st.write(f"**{class_names[pred_class]}** — {probs[pred_class].item()*100:.2f}% confidence")
-            chart_data = {class_names[i]: float(probs[i].item()) for i in range(len(probs))}
-            st.bar_chart(pd.DataFrame.from_dict(chart_data, orient="index", columns=["probability"]))
 
-        # -----------------------
-        # Grad-CAM Visualization
-        # -----------------------
+            # Prettier Plotly chart
+            chart_data = pd.DataFrame({
+                "Class": class_names,
+                "Probability": [float(probs[i].item()) for i in range(len(probs))]
+            })
+            fig = px.bar(
+                chart_data,
+                x="Class",
+                y="Probability",
+                color="Class",
+                text="Probability",
+                color_discrete_sequence=["#2ecc71", "#e74c3c"]
+            )
+            fig.update_traces(texttemplate='%{text:.2%}', textposition='outside')
+            fig.update_layout(yaxis=dict(range=[0,1]))
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Grad-CAM side by side
         if show_gradcam:
             if not GRADCAM_AVAILABLE:
-                st.error("pytorch-grad-cam is not installed.")
+                st.error("pytorch-grad-cam not installed.")
                 st.exception(gradcam_import_error)
             else:
-                try:
-                    if hasattr(model, "model"):  # ResNetClassifier wrapper
-                        target_layers = [model.model.layer4[-1]]
-                    else:
-                        target_layers = [model.layer4[-1]]
+                if hasattr(model, "model"):
+                    target_layers = [model.model.layer4[-1]]
+                else:
+                    target_layers = [model.layer4[-1]]
+                cam = GradCAM(model=model, target_layers=target_layers, use_cuda=False)
+                rgb_img = np.array(img.resize((224,224))) / 255.0
+                grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(pred_class)])[0]
+                visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
 
-                    # ✅ No use_cuda argument (new API)
-                    cam = GradCAM(model=model, target_layers=target_layers)
-
-                    rgb_img = np.array(img.resize((224,224))) / 255.0
-                    grayscale_cam = cam(input_tensor=input_tensor,
-                                        targets=[ClassifierOutputTarget(pred_class)])[0]
-
-                    visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
-
-                    st.subheader("Grad-CAM")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.image(rgb_img, caption="Original", width=300)
-                    
-                    with col2:
-                        st.image(visualization, caption="Grad-CAM", width=300)
-
-                except Exception as e:
-                    st.error(f"Grad-CAM failed: {e}")
+                st.subheader("Grad-CAM")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.image(img, caption="Original", width=350)
+                with col2:
+                    st.image(visualization, caption="Grad-CAM", width=350)
 
     except Exception as e:
         st.error(f"Failed to process uploaded file: {e}")
 
-       
+# Footer
+st.markdown('<p class="footer">Made with ❤️ using Streamlit & PyTorch</p>', unsafe_allow_html=True)
