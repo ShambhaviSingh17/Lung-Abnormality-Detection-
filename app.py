@@ -2,17 +2,6 @@
 """
 CliniScan: Merged Chest X-Ray Classification, Training, and Deployment Script.
 
-This script combines functionalities for lung abnormality detection into a single file.
-It includes utilities for dataset preparation, a model definition, an example training
-workflow, and a complete Streamlit web application for interactive inference and
-visualization with Grad-CAM.
-
-To run the Streamlit application:
-1.  Save this code as `app.py`.
-2.  Install dependencies:
-    pip install streamlit torch torchvision pydicom Pillow numpy opencv-python-headless pandas plotly pytorch-grad-cam
-3.  (Optional) Place a trained `model.pth` file in the same directory.
-4.  Run from your terminal: streamlit run app.py
 """
 
 # ===================================================================
@@ -91,9 +80,6 @@ def dicom_bytes_to_pil(dcm_bytes: bytes) -> Image.Image:
 
 # ===================================================================
 # SECTION 2: DATASET PREPARATION & MODEL TRAINING (OFFLINE TASKS)
-# These functions are for preparing a dataset and training the model.
-# They are not executed when the Streamlit app runs but are included
-# for completeness to show the end-to-end workflow.
 # ===================================================================
 
 # --- 2.1 DICOM to PNG File Conversion Utilities ---
