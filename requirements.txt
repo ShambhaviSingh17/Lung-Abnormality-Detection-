@@ -14,7 +14,7 @@ opencv-python
 pillow
 pydicom
 
-# Grad-CAM (install from GitHub for Python 3.13 support)
+# Grad-CAM (install from GitHub to support Python 3.10+)
 git+https://github.com/jacobgil/pytorch-grad-cam.git
 
 # Deep learning models (YOLOv8, etc.)
