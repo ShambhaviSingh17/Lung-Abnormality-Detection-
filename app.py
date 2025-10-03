@@ -234,7 +234,7 @@ else:
                     st.error(f"Grad-CAM failed: {e}")
 
         # ✅ Footer
-        st.markdown('<p class="footer">Made with ❤️ using Streamlit & PyTorch</p>', unsafe_allow_html=True)
+        st.markdown('<p class="footer">Made this using Streamlit & PyTorch</p>', unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Failed to process uploaded file: {e}")
