@@ -41,5 +41,4 @@ streamlit run app.py
 
 ## Demo
 
-Try it here: [CliniScan Live Demo](https://kvekvdmryl6fg9wgsb42fg.streamlit.app/)
-
+Try it here: [CliniScan Live Demo](https://h3thwfnntfkhbezuijtppi.streamlit.app/)
