@@ -1,0 +1,30 @@
+# Core scientific libraries
+numpy
+pandas
+matplotlib
+seaborn
+
+# PyTorch + vision utilities
+torch
+torchvision
+torchaudio
+
+# Imaging
+opencv-python
+pillow
+pydicom
+
+# Grad-CAM
+pytorch-grad-cam
+
+# Deep learning models (YOLOv8, etc.)
+ultralytics
+
+# Streamlit for deployment
+streamlit
+
+# Optional: Ngrok if you want tunneling from Colab
+pyngrok
+
+# Utilities
+scikit-learn
