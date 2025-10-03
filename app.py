@@ -10,60 +10,55 @@ Original file is located at
 
 **1-DICOM to PNG Conversion Utility**
 """
-
-# Commented out IPython magic to ensure Python compatibility.
-# Install dependencies
-# %pip install pydicom
-
-import os
-import cv2
-import pydicom
-import pandas as pd
-
-
-def dicom_to_png(dicom_path: str, png_path: str) -> bool:
-    """Convert a single DICOM file to PNG format."""
-    try:
-        ds = pydicom.dcmread(dicom_path)
-        img = ds.pixel_array
-
-        # Normalize pixel values to 0–255 and convert to uint8
-        img_norm = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
-        img_uint8 = img_norm.astype("uint8")
-
-        cv2.imwrite(png_path, img_uint8)
-        return True
-    except Exception as e:
-        print(f"❌ Failed to convert {dicom_path}: {e}")
-        return False
-
-
-def convert_dataset(dicom_dir: str, output_dir: str, annotations_csv: str):
-    """Batch convert DICOM dataset to PNG using annotations."""
-    os.makedirs(output_dir, exist_ok=True)
-    annotations = pd.read_csv(annotations_csv)
-
-    for _, row in annotations.iterrows():
-        dicom_file = os.path.join(dicom_dir, f"{row['image_id']}.dicom")
-        png_file = os.path.join(output_dir, f"{row['image_id']}.png")
-
-        if os.path.exists(dicom_file):
-            if dicom_to_png(dicom_file, png_file):
-                print(f"✅ Converted: {dicom_file} → {png_file}")
-        else:
-            print(f"⚠️ Missing file: {dicom_file}")
-
-"""**2-Custom Dataset Class (VinDr-CXR)**"""
-
+# app.py
+import streamlit as st
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
-import pandas as pd
-import numpy as np
-import cv2
 from PIL import Image
+import numpy as np
+import io
+import cv2
+import pandas as pd
+import os
+import tempfile
 
+# Optional imports that may fail if not installed; we'll handle errors gracefully
+try:
+    from pytorch_grad_cam import GradCAM
+    from pytorch_grad_cam.utils.image import show_cam_on_image
+    from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+    GRADCAM_AVAILABLE = True
+except Exception as e:
+    GRADCAM_AVAILABLE = False
+    gradcam_import_error = e
+
+# -----------------------
+# Utilities: DICOM -> PIL
+# -----------------------
+import pydicom
+from io import BytesIO
+
+def dicom_bytes_to_pil(dcm_bytes):
+    """Convert DICOM bytes to a PIL.Image (RGB)."""
+    try:
+        ds = pydicom.dcmread(BytesIO(dcm_bytes))
+        arr = ds.pixel_array
+        # Normalize to 0-255
+        arr_norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
+        # If single channel, convert to RGB
+        if arr_norm.ndim == 2:
+            img = Image.fromarray(arr_norm).convert("RGB")
+        else:
+            img = Image.fromarray(arr_norm).convert("RGB")
+        return img
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse DICOM: {e}")
+
+# -----------------------
+# VinDr dataset class (kept for compatibility)
+# -----------------------
+from torch.utils.data import Dataset
 class VinDrCXRDataset(Dataset):
     def __init__(self, df, img_dir, transform=None, task='classification'):
         self.df = df
@@ -112,343 +107,166 @@ class VinDrCXRDataset(Dataset):
 
             return image, target
 
-"""**3-ResNet18 Classifier (Transfer Learning)**"""
-
-import torch
-import torch.nn as nn
-from torchvision.models import resnet18, ResNet18_Weights
+# -----------------------
+# ResNetClassifier (kept for compatibility with saved state_dict)
+# -----------------------
+from torchvision.models import resnet18
+try:
+    # newer torchvision uses ResNet18_Weights
+    from torchvision.models import ResNet18_Weights
+    RESNET_WEIGHTS = ResNet18_Weights.DEFAULT
+except Exception:
+    RESNET_WEIGHTS = None
 
 class ResNetClassifier(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes=2):
         super(ResNetClassifier, self).__init__()
-        # Load a pre-trained ResNet-18 model
-        self.model = resnet18(weights=ResNet18_Weights.DEFAULT)
-        # Modify the final fully connected layer for your number of classes
+        try:
+            if RESNET_WEIGHTS is not None:
+                self.model = resnet18(weights=RESNET_WEIGHTS)
+            else:
+                self.model = resnet18(pretrained=True)
+        except Exception:
+            # fallback
+            self.model = resnet18(pretrained=True)
         num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Linear(num_ftrs, num_classes)
 
     def forward(self, x):
         return self.model(x)
 
-if __name__ == "__main__":
-    num_classes = 5 # Example number of classes
-    model = ResNetClassifier(num_classes)
+# -----------------------
+# Model loading helper
+# -----------------------
+@st.cache_resource
+def load_model_from_path(model_path=None, num_classes=2):
+    """
+    Loads your ResNetClassifier if possible (so saved state_dict matches),
+    otherwise falls back to torchvision resnet18 pre-trained model.
+    """
+    # prefer to build ResNetClassifier (so state dicts saved from your training load)
+    model = ResNetClassifier(num_classes=num_classes)
+    if model_path:
+        try:
+            # save uploaded file into a temp file path for torch.load
+            sd = torch.load(model_path, map_location="cpu")
+            # if the user uploaded an entire model object, sd may not be a state_dict
+            if isinstance(sd, dict):
+                model.load_state_dict(sd)
+            else:
+                # maybe the user saved the full model object
+                model = sd
+            st.success("✅ model.pth loaded.")
+            model.eval()
+            return model
+        except Exception as e:
+            st.warning(f"Could not load provided model.pth into ResNetClassifier: {e}")
+            st.info("Falling back to a pretrained ResNet18 with the same number of output neurons.")
+    # fallback
+    try:
+        # create a torchvision resnet and adjust final layer
+        try:
+            if RESNET_WEIGHTS is not None:
+                base = resnet18(weights=RESNET_WEIGHTS)
+            else:
+                base = resnet18(pretrained=True)
+        except Exception:
+            base = resnet18(pretrained=True)
+        base.fc = nn.Linear(base.fc.in_features, num_classes)
+        st.info("Using fallback ResNet18 (ImageNet weights).")
+        base.eval()
+        return base
+    except Exception as e:
+        raise RuntimeError(f"Failed to create model: {e}")
 
-    # Check model output
-    dummy_input = torch.randn(1, 3, 256, 256)
-    output = model(dummy_input)
-    print(f"Model output shape: {output.shape}")
-
-"""**4.Google Drive Mount & Dataset Extraction**"""
-
-import zipfile, os
-from google.colab import drive
-
-# Mount Google Drive
-drive.mount('/content/drive', force_remount=True)
-
-zip_path = "/content/drive/MyDrive/ColabDatasets/archive(3).zip"
-extract_path = "/content/dataset"
-
-# Extract dataset if not already extracted
-if not os.path.exists(extract_path) or not os.listdir(extract_path):
-    os.makedirs(extract_path, exist_ok=True)
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_path)
-    print(f"✅ Dataset extracted to: {extract_path}")
-else:
-    print(f"ℹ️ Dataset already exists at: {extract_path}")
-
-# Show dataset structure (first 40 lines)
-print("📂 Dataset structure (first 40 lines):")
-!ls -R /content/dataset | head -40
-
-"""**5-YOLOv8 Setup, Dataset Preparation & Training**"""
-
-# Install YOLOv8
-!pip install ultralytics --quiet
-
-import os
-import random
-import torch
-import zipfile
-import shutil
-from ultralytics import YOLO
-from google.colab import drive
-
-# Check PyTorch & GPU
-print("✅ Torch version:", torch.__version__)
-print("✅ GPU available:", torch.cuda.is_available())
-if torch.cuda.is_available():
-    print("✅ GPU name:", torch.cuda.get_device_name(0))
-
-# Mount Google Drive
-drive.mount('/content/drive', force_remount=True)
-
-# Dataset paths
-zip_path = "/content/drive/MyDrive/ColabDatasets/archive(3).zip"
-extract_path = "/content/dataset"
-
-# Extract dataset if not already extracted
-if not os.path.exists(extract_path) or not os.listdir(extract_path):
-    os.makedirs(extract_path, exist_ok=True)
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_path)
-    print(f"✅ Dataset extracted to {extract_path}")
-else:
-    print("ℹ️ Dataset already available.")
-
-# Reorganize dataset for YOLOv8 classification (example: single class 'cat')
-train_dir = os.path.join(extract_path, "train")
-val_dir = os.path.join(extract_path, "val")
-
-cat_train_dir = os.path.join(train_dir, "cat")
-os.makedirs(cat_train_dir, exist_ok=True)
-
-# Move all training images into class folder
-for f in os.listdir(train_dir):
-    if f.lower().endswith(('.jpg', '.jpeg', '.png')):
-        shutil.move(os.path.join(train_dir, f), os.path.join(cat_train_dir, f))
-
-# Create validation directory and subfolder
-os.makedirs(val_dir, exist_ok=True)
-cat_val_dir = os.path.join(val_dir, "cat")
-os.makedirs(cat_val_dir, exist_ok=True)
-
-# Split 10% of data into validation
-images = os.listdir(cat_train_dir)
-random.shuffle(images)
-num_val = max(1, int(0.1 * len(images)))
-
-for img in images[:num_val]:
-    shutil.move(os.path.join(cat_train_dir, img), os.path.join(cat_val_dir, img))
-
-print("✅ Dataset reorganized for YOLOv8 classification.")
-
-# Show dataset structure (first 40 lines)
-!ls -R /content/dataset | head -40
-
-# Load pretrained YOLOv8 classification model
-model = YOLO("yolov8n-cls.pt")
-
-# Train the model
-model.train(
-    data="/content/dataset/chest_xray/chest_xray",  # path with train/ and val/
-    epochs=20,
-    imgsz=224,
-    batch=32,
-    name="classification_model_fixed"
-)
-
-"""**6-Grad-CAM Setup & Visualization**"""
-
-# ================================================================
-# Grad-CAM Setup & Visualization
-# ================================================================
-import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from torchvision import transforms
-from PIL import Image
-
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.image import show_cam_on_image
-from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-
-from __main__ import ResNetClassifier  # adjust import if needed
-
-# Config
-num_classes = 2  # NORMAL, PNEUMONIA
-class_names = ["NORMAL", "PNEUMONIA"]
-
-# Example image
-IMAGE_PATH = "/content/dataset/chest_xray/chest_xray/train/PNEUMONIA/person1000_bacteria_2931.jpeg"
-
-# Load model
-model = ResNetClassifier(num_classes)
-# model.load_state_dict(torch.load("model.pth", map_location="cpu"))
-model.eval()
-
-# Preprocessing pipeline
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
+# -----------------------
+# Preprocessing
+# -----------------------
+transform = transforms = transforms = transforms = transforms = None
+from torchvision import transforms as T
+transform = T.Compose([
+    T.Resize((224, 224)),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225])
 ])
 
-# Grad-CAM visualization
-img = Image.open(IMAGE_PATH).convert("RGB")
-input_tensor = transform(img).unsqueeze(0)
-rgb_img = np.array(img.resize((224, 224))) / 255.0
+# -----------------------
+# Streamlit UI
+# -----------------------
+st.set_page_config(page_title="CliniScan — Chest X-Ray (Grad-CAM)", layout="wide")
+st.title("🩻 CliniScan — Chest X-Ray Classification + Grad-CAM")
 
-target_layers = [model.model.layer4[-1]]
-cam = GradCAM(model=model, target_layers=target_layers)
+with st.sidebar:
+    st.header("Options")
+    num_classes = st.number_input("Number of classes (model final layer)", value=2, min_value=2, max_value=20)
+    upload_model = st.file_uploader("Upload model.pth (optional)", type=["pt", "pth"], help="If you trained a custom model, upload it here.")
+    show_gradcam = st.checkbox("Enable Grad-CAM visualization", value=True)
+    show_probs = st.checkbox("Show class probabilities", value=True)
 
-with torch.no_grad():
-    outputs = model(input_tensor)
-    pred_class = torch.argmax(outputs, dim=1).item()
+# If user uploaded a model file, write to a temp file and pass path to loader
+model_path = None
+if upload_model is not None:
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pth")
+    tfile.write(upload_model.getvalue())
+    tfile.flush()
+    model_path = tfile.name
 
-grayscale_cam = cam(input_tensor=input_tensor,
-                    targets=[ClassifierOutputTarget(pred_class)])[0]
-visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
+model = load_model_from_path(model_path=model_path, num_classes=int(num_classes))
 
-# Plot original image + Grad-CAM heatmap
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
-ax1.imshow(rgb_img)
-ax1.set_title("Original Image")
-ax1.axis("off")
+# Image uploader (accept .dcm as well)
+uploaded = st.file_uploader("Upload an X-ray image or DICOM (.dcm)", type=["png","jpg","jpeg","dcm"])
+if uploaded is None:
+    st.info("Upload a chest X-ray image (jpg/png) or a DICOM (.dcm) file to run prediction.")
+else:
+    try:
+        filename = uploaded.name.lower()
+        if filename.endswith(".dcm"):
+            img = dicom_bytes_to_pil(uploaded.getvalue())
+        else:
+            img = Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
 
-ax2.imshow(visualization)
-ax2.set_title(f"Grad-CAM Heatmap (Class {pred_class})")
-ax2.axis("off")
+        st.image(img, caption="Uploaded image", use_column_width=True)
 
-plt.show()
+        # Preprocess and predict
+        input_tensor = transform(img).unsqueeze(0)  # shape (1,C,H,W)
+        with torch.no_grad():
+            outputs = model(input_tensor)
+            probs = torch.softmax(outputs, dim=1)[0]
+            pred_class = torch.argmax(probs).item()
 
+        class_names = [f"Class_{i}" for i in range(int(num_classes))]
+        # If two classes, give nicer default labels
+        if int(num_classes) == 2:
+            class_names = ["Normal","Pneumonia"]
 
-# ================================================================
-# X-ray Prediction Function (with Probabilities)
-# ================================================================
-def predict_xray(image_path):
-    img = Image.open(image_path).convert("RGB")
-    input_tensor = transform(img).unsqueeze(0)
+        if show_probs:
+            st.subheader("Prediction")
+            st.write(f"**{class_names[pred_class]}** — {probs[pred_class].item()*100:.2f}% confidence")
+            # Bar chart (simple)
+            chart_data = {class_names[i]: float(probs[i].item()) for i in range(len(probs))}
+            st.bar_chart(pd.DataFrame.from_dict(chart_data, orient="index", columns=["probability"]))
 
-    with torch.no_grad():
-        outputs = model(input_tensor)
-        probs = torch.softmax(outputs, dim=1)[0]
+        # Grad-CAM
+        if show_gradcam:
+            if not GRADCAM_AVAILABLE:
+                st.error("pytorch-grad-cam is not installed in this environment. Add it to requirements.txt or set .streamlit/runtime.txt to a compatible Python version.")
+                st.exception(gradcam_import_error)
+            else:
+                # select target layer depending on model wrapper
+                try:
+                    if hasattr(model, "model"):  # ResNetClassifier wrapper
+                        target_layers = [model.model.layer4[-1]]
+                    else:
+                        target_layers = [model.layer4[-1]]
+                    cam = GradCAM(model=model, target_layers=target_layers, use_cuda=False)
+                    rgb_img = np.array(img.resize((224,224))) / 255.0
+                    grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(pred_class)])[0]
+                    visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
+                    st.subheader("Grad-CAM")
+                    st.image(visualization, caption="Grad-CAM visualization", use_column_width=True)
+                except Exception as e:
+                    st.error(f"Grad-CAM failed: {e}")
 
-    pred_class = torch.argmax(probs).item()
-    confidence = probs[pred_class].item() * 100
-
-    print(f"Predicted class: {class_names[pred_class]} ({confidence:.2f}%)")
-
-    plt.bar(class_names, probs.numpy() * 100, color=["green", "red"])
-    plt.ylabel("Probability (%)")
-    plt.title("Pneumonia Prediction")
-    plt.show()
-
-    return class_names[pred_class], confidence
-
-predict_xray(IMAGE_PATH)
-
-"""**7-Deployment**"""
-
-# Commented out IPython magic to ensure Python compatibility.
-# %%writefile app.py
-# import streamlit as st
-# import torch
-# import torch.nn as nn
-# from torchvision import transforms, models
-# from PIL import Image
-# import subprocess
-# import threading
-# import time
-# import os
-# from pyngrok import ngrok, conf
-# 
-# # ================================================================
-# # Deployment Setup (Streamlit + ngrok)
-# # ================================================================
-# STREAMLIT_PORT = 8501
-# NGROK_AUTH_TOKEN = "YOUR_NGROK_AUTH_TOKEN"  # Replace with your token
-# 
-# def start_streamlit_process():
-#     """Run Streamlit app as background process."""
-#     cmd = ["streamlit", "run", "app.py", "--server.port", str(STREAMLIT_PORT), "--server.headless=True"]
-#     proc = subprocess.Popen(cmd)
-#     return proc
-# 
-# def start_ngrok_tunnel(port):
-#     """Create ngrok tunnel for given port."""
-#     try:
-#         if NGROK_AUTH_TOKEN == "YOUR_NGROK_AUTH_TOKEN":
-#             print("\n--- NGROK SETUP FAILED ---")
-#             print("Set your ngrok auth token in NGROK_AUTH_TOKEN.")
-#             return None
-#         conf.get_default().auth_token = NGROK_AUTH_TOKEN
-#         public_url = ngrok.connect(port, proto="http")
-#         return public_url
-#     except Exception as e:
-#         print(f"Failed to start ngrok tunnel: {e}")
-#         return None
-# 
-# # Run deployment if not already in Streamlit
-# if "RUNNING_IN_STREAMLIT" not in os.environ:
-#     os.environ["RUNNING_IN_STREAMLIT"] = "true"
-#     print("\n--- Starting Deployment ---")
-# 
-#     threading.Thread(target=start_streamlit_process).start()
-#     time.sleep(5)  # wait for Streamlit
-#     public_url = start_ngrok_tunnel(STREAMLIT_PORT)
-# 
-#     if public_url:
-#         print("\n--- APP DEPLOYED ---")
-#         print(f"Public URL: {public_url}\n")
-#         print("Press Ctrl+C to stop.")
-# 
-#     try:
-#         while True:
-#             time.sleep(1)
-#     except KeyboardInterrupt:
-#         print("\nShutting down...")
-#         ngrok.kill()
-#         print("Done.")
-#     st.stop()
-# 
-# # ================================================================
-# # Streamlit App Logic
-# # ================================================================
-# 
-# # --- Load Model ---
-# @st.cache_resource
-# def load_model():
-#     """Load trained model or dummy ResNet."""
-#     model = models.resnet18(pretrained=False)
-#     model.fc = nn.Linear(model.fc.in_features, 2)
-#     try:
-#         model.load_state_dict(torch.load("model.pth", map_location="cpu"))
-#         st.success("Trained model loaded.")
-#     except FileNotFoundError:
-#         st.warning("`model.pth` not found. Using dummy model.")
-#     model.eval()
-#     return model
-# 
-# model = load_model()
-# 
-# # --- Preprocessing ---
-# transform = transforms.Compose([
-#     transforms.Resize((224, 224)),
-#     transforms.ToTensor(),
-#     transforms.Normalize([0.485, 0.456, 0.406],
-#                          [0.229, 0.224, 0.225])
-# ])
-# 
-# # --- User Interface ---
-# st.title("🩻 Chest X-Ray Classification")
-# st.write("Upload a Chest X-ray image for classification.")
-# 
-# uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-# 
-# if uploaded_file:
-#     try:
-#         image = Image.open(uploaded_file).convert("RGB")
-#         st.image(image, caption="Uploaded Image", use_column_width=True)
-# 
-#         input_tensor = transform(image).unsqueeze(0)
-#         with torch.no_grad():
-#             outputs = model(input_tensor)
-#             probs = torch.softmax(outputs, dim=1)[0]
-#             pred_class = torch.argmax(probs).item()
-# 
-#         class_names = ["Normal", "Pneumonia"]
-#         st.write(f"### Prediction: **{class_names[pred_class]}**")
-#         st.write(f"Confidence: {probs[pred_class].item()*100:.2f}%")
-#         st.bar_chart({class_names[i]: probs[i].item() for i in range(len(class_names))})
-#     except Exception as e:
-#         st.error(f"Prediction error: {e}")
-#
-
-!python app.py
-
-!jupyter nbconvert --to script your_notebook.ipynb
+    except Exception as e:
+        st.error(f"Failed to process uploaded file: {e}")
