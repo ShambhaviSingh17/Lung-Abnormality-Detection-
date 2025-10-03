@@ -151,7 +151,7 @@ else:
         else:
             img = Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
 
-        st.image(img, caption="Uploaded image", use_column_width=True)
+        st.image(img, caption="Uploaded image", width=400)
 
         # Preprocess and predict
         input_tensor = transform(img).unsqueeze(0)
